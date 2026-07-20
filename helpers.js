@@ -4,7 +4,12 @@ const axios = require('axios');
 const xml2js = require('xml2js');
 const https = require('https');
 
-const agent = new https.Agent({ rejectUnauthorized: false });
+const agent = new https.Agent({ 
+    rejectUnauthorized : false,
+    keepAlive          : true,
+    maxSockets         : 5,
+    keepAliveMsecs     : 3000
+});
 
 const BASE_URL = `https://${process.env.ENTERVO_HOST}:${process.env.ENTERVO_PORT}`;
 const AUTH = {
@@ -12,36 +17,27 @@ const AUTH = {
     password : process.env.ENTERVO_PASSWORD
 };
 
-const CASHIER = {
-    computer_id  : process.env.CASHIER_COMPUTER_ID,
-    device_id    : process.env.CASHIER_DEVICE_ID,
-    contract_id  : process.env.CASHIER_CONTRACT_ID,
-    consumer_id  : process.env.CASHIER_CONSUMER_ID,
-    password     : process.env.CASHIER_PASSWORD
-};
+const CAJEROS = [
+    {
+        computer_id  : process.env.CASHIER_COMPUTER_ID,
+        device_id    : process.env.CASHIER_DEVICE_ID,
+        contract_id  : process.env.CASHIER_CONTRACT_ID,
+        consumer_id  : process.env.CASHIER_CONSUMER_ID,
+        password     : process.env.CASHIER_PASSWORD
+    },
+    {
+        computer_id  : process.env.CASHIER_COMPUTER_ID_2,
+        device_id    : process.env.CASHIER_DEVICE_ID_2,
+        contract_id  : process.env.CASHIER_CONTRACT_ID_2,
+        consumer_id  : process.env.CASHIER_CONSUMER_ID_2,
+        password     : process.env.CASHIER_PASSWORD_2
+    }
+];
+
+let cajeroIndex = 0;
+let CASHIER = CAJEROS[cajeroIndex];
 
 const builder = new xml2js.Builder({ headless : true });
-
-// Cola de pagos
-let _queue = [];
-let _processing = false;
-
-const _processQueue = async function () {
-    if (_processing || _queue.length === 0) return;
-    _processing = true;
-
-    let { params, resolve, reject } = _queue.shift();
-
-    try {
-        let result = await _doCheckout(params);
-        resolve(result);
-    } catch (err) {
-        reject(err);
-    } finally {
-        _processing = false;
-        _processQueue();
-    }
-};
 
 module.exports = function () {
     let _self = this;
@@ -72,11 +68,11 @@ module.exports = function () {
             return result.data;
         } catch (err) {
             console.log('GET Error status:', err.response ? err.response.status : 'no response');
-            console.log('GET Error headers:', err.response ? err.response.headers : 'no headers');
             let message = err.response ? `Entervo error ${err.response.status}: ${JSON.stringify(err.response.data)}` : err.message;
             throw new Error(message);
         }
     };
+
     _self.post = async function (url, data) {
         let result = await axios.post(`${BASE_URL}${url}`, data, {
             auth       : AUTH,
@@ -116,17 +112,17 @@ module.exports = function () {
                 barcode   : params.barcode,
                 type      : '128B'
             });
-        
+
             let classification = response.classification;
-        
+
             if (classification.responsecode === '0' && classification.ticketdata) {
                 ticket = classification.ticketdata;
-            
+
                 let extResponse = await _self.get(`/TicketClassificationWebService/ext-medium-ticket-classification`, {
                     requestid : rid,
                     epan      : classification.ticketdata.epan
                 });
-            
+
                 let extData = extResponse.classificationextmedium;
                 if (extData.responsecode === '0' && extData.ticketdataextmedium) {
                     ticket = extData.ticketdataextmedium;
@@ -164,14 +160,14 @@ module.exports = function () {
             amount   : calculation.amount,
             duration : calculation.duration,
             dates    : {
-                entry    : ticket.entrytime,
-                tariff   : calculation.tarifftime
+                entry  : ticket.entrytime,
+                tariff : calculation.tarifftime
             },
-            flags    : {
+            flags : {
                 paid    : parseInt(ticket.countofpayments) > 0,
                 present : ticket.presentinfacility === ticket.entryfacility
             },
-            meta     : {
+            meta : {
                 ticket      : ticket,
                 calculation : calculation
             }
@@ -200,11 +196,9 @@ module.exports = function () {
     };
 
     _self.openShift = async function () {
-        let now = new Date().toISOString().split('.')[0];
-          console.log('Opening shift with:', CASHIER);
-          console.log('Opening shift with:', CASHIER);
-          console.log('ENTERVO_USER:', process.env.ENTERVO_USER);
-          console.log('ENTERVO_PASSWORD:', process.env.ENTERVO_PASSWORD);
+        let now = new Date().toLocaleString('sv-SE', { timeZone: 'America/Mexico_City' }).replace(' ', 'T');
+        console.log('Opening shift with cashier:', CASHIER.consumer_id);
+
         let xml = builder.buildObject({
             'pay:shift' : {
                 $                       : { 'xmlns:pay' : 'http://gsph.sub.com/payment/types' },
@@ -216,27 +210,56 @@ module.exports = function () {
                 'pay:createDateTime'    : now
             }
         });
-        console.log('Shift XML:', xml);
 
         let result = await axios.post(`${BASE_URL}/PaymentWebService/shifts`, xml, {
-            auth       : { username: process.env.ENTERVO_USER, password: process.env.ENTERVO_PASSWORD },
+            auth       : AUTH,
             httpsAgent : agent,
             headers    : { 'Content-Type' : 'text/xml', accept : '*/*' }
         });
 
+        if (typeof result.data === 'string') {
+            let parsed = await xml2js.parseStringPromise(result.data, { explicitArray : false });
+            return parsed.shift || parsed;
+        }
+
         return result.data.shift || result.data;
     };
 
-    // Cola de pagos — procesa uno a la vez
+    _self.closeShift = async function (shift) {
+        let now = new Date().toLocaleString('sv-SE', { timeZone: 'America/Mexico_City' }).replace(' ', 'T');
+        let xml = builder.buildObject({
+            'pay:shift' : {
+                $                       : { 'xmlns:pay' : 'http://gsph.sub.com/payment/types' },
+                'pay:shiftId'           : shift.shiftId,
+                'pay:computerId'        : shift.computerId,
+                'pay:deviceId'          : shift.deviceId,
+                'pay:cashierContractId' : shift.cashierContractId,
+                'pay:cashierConsumerId' : shift.cashierConsumerId,
+                'pay:finishDateTime'    : now,
+                'pay:shiftStatus'       : 2
+            }
+        });
+
+        let result = await axios.put(`${BASE_URL}/PaymentWebService/shifts/${shift.shiftId}`, xml, {
+            auth       : AUTH,
+            httpsAgent : agent,
+            headers    : { 'Content-Type' : 'text/xml', accept : '*/*' }
+        });
+
+        console.log('Shift closed:', shift.shiftId);
+        return result.data;
+    };
+
+    // Cola de pagos
     let _queue = [];
     let _processing = false;
-    
+
     const _processQueue = async function () {
         if (_processing || _queue.length === 0) return;
         _processing = true;
-    
+
         let { params, resolve, reject } = _queue.shift();
-    
+
         try {
             let result = await _doCheckout(params);
             resolve(result);
@@ -247,23 +270,23 @@ module.exports = function () {
             _processQueue();
         }
     };
-    
+
     const _doCheckout = async function (params) {
         let balance = await _self.balance(params);
         let intentos = 0;
-        const MAX_INTENTOS = 3;
-    
+        const MAX_INTENTOS = 6;
+
         const convertDate = function (dateStr) {
             if (!dateStr || dateStr.length !== 14) return null;
             return `${dateStr.substr(0,4)}-${dateStr.substr(4,2)}-${dateStr.substr(6,2)}T${dateStr.substr(8,2)}:${dateStr.substr(10,2)}:${dateStr.substr(12,2)}`;
         };
-    
+
         while (intentos < MAX_INTENTOS) {
             try {
                 let shift = await _self.shift();
                 let nextId = parseInt(shift.lastSalesTransactionId) + 1;
-                let now = new Date().toISOString().split('.')[0];
-            
+                let now = new Date().toLocaleString('sv-SE', { timeZone: 'America/Mexico_City' }).replace(' ', 'T');
+
                 let xml = builder.buildObject({
                     'pay:salesTransactionDetail' : {
                         $                      : { 'xmlns:pay' : 'http://gsph.sub.com/payment/types' },
@@ -310,28 +333,50 @@ module.exports = function () {
                         }
                     }
                 });
-            
+
                 let payment = await _self.put(`/PaymentWebService/shifts/${shift.shiftId}/salestransactions`, xml);
                 let transaction = await _self.get(`/PaymentWebService/shifts/${shift.shiftId}/salestransactions/${nextId}`);
-            
+
                 return { transaction, payment };
-            
+
             } catch (err) {
                 intentos++;
                 console.log(`Intento ${intentos} fallido:`, err.message);
-            
+
                 if (err.message.includes('30003') || err.message.includes('Wrong shift')) {
                     console.log('Wrong shift — cerrando y abriendo nuevo turno...');
                     try {
                         let shift = await _self.shift();
                         await _self.closeShift(shift);
-                    } catch (e) {}
+                    } catch (e) {
+                        console.log('Error cerrando turno:', e.message);
+                    }
                     await new Promise(r => setTimeout(r, 500));
-                
+
                 } else if (err.message.includes('10003') || err.message.includes('Wrong Sequence')) {
                     console.log('Wrong sequence — reintentando...');
                     await new Promise(r => setTimeout(r, 500));
-                
+
+                } else if (err.message.includes('10001') || err.message.includes('Dataset not created')) {
+                    console.log('Dataset not created — rotando cajero y abriendo nuevo turno...');
+                    try {
+                        let currentShift = await _self.shift();
+                        await _self.closeShift(currentShift);
+                    } catch (e) {
+                        console.log('Error cerrando turno (puede ya estar cerrado):', e.message);
+                    }
+                    // Rotar al siguiente cajero
+                    cajeroIndex = (cajeroIndex + 1) % CAJEROS.length;
+                    CASHIER = CAJEROS[cajeroIndex];
+                    console.log('Rotando a cajero:', CASHIER.consumer_id);
+                    try {
+                        await _self.openShift();
+                        console.log('Turno nuevo abierto con cajero:', CASHIER.consumer_id);
+                    } catch (e) {
+                        console.log('Error abriendo turno:', e.message);
+                    }
+                    await new Promise(r => setTimeout(r, 1000));
+
                 } else {
                     throw err;
                 }
@@ -339,14 +384,14 @@ module.exports = function () {
         }
         throw new Error('No se pudo completar el pago después de ' + MAX_INTENTOS + ' intentos');
     };
-    
+
     _self.checkout = async function (params) {
         return new Promise((resolve, reject) => {
             console.log(`Pago en cola. Posición: ${_queue.length + 1}`);
             _queue.push({ params, resolve, reject });
             _processQueue();
         });
-    }; 
+    };
 
     _self.stats = async function () {
         let version = await _self.get('/PaymentWebService/version');
