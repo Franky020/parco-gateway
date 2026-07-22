@@ -17,25 +17,13 @@ const AUTH = {
     password : process.env.ENTERVO_PASSWORD
 };
 
-const CAJEROS = [
-    {
-        computer_id  : process.env.CASHIER_COMPUTER_ID,
-        device_id    : process.env.CASHIER_DEVICE_ID,
-        contract_id  : process.env.CASHIER_CONTRACT_ID,
-        consumer_id  : process.env.CASHIER_CONSUMER_ID,
-        password     : process.env.CASHIER_PASSWORD
-    },
-    {
-        computer_id  : process.env.CASHIER_COMPUTER_ID_2,
-        device_id    : process.env.CASHIER_DEVICE_ID_2,
-        contract_id  : process.env.CASHIER_CONTRACT_ID_2,
-        consumer_id  : process.env.CASHIER_CONSUMER_ID_2,
-        password     : process.env.CASHIER_PASSWORD_2
-    }
-];
-
-let cajeroIndex = 0;
-let CASHIER = CAJEROS[cajeroIndex];
+const CASHIER = {
+    computer_id  : process.env.CASHIER_COMPUTER_ID,
+    device_id    : process.env.CASHIER_DEVICE_ID,
+    contract_id  : process.env.CASHIER_CONTRACT_ID,
+    consumer_id  : process.env.CASHIER_CONSUMER_ID,
+    password     : process.env.CASHIER_PASSWORD
+};
 
 const builder = new xml2js.Builder({ headless : true });
 
@@ -358,22 +346,12 @@ module.exports = function () {
                     await new Promise(r => setTimeout(r, 500));
 
                 } else if (err.message.includes('10001') || err.message.includes('Dataset not created')) {
-                    console.log('Dataset not created — rotando cajero y abriendo nuevo turno...');
+                    console.log('Dataset not created — cerrando y abriendo nuevo turno...');
                     try {
                         let currentShift = await _self.shift();
                         await _self.closeShift(currentShift);
                     } catch (e) {
                         console.log('Error cerrando turno (puede ya estar cerrado):', e.message);
-                    }
-                    // Rotar al siguiente cajero
-                    cajeroIndex = (cajeroIndex + 1) % CAJEROS.length;
-                    CASHIER = CAJEROS[cajeroIndex];
-                    console.log('Rotando a cajero:', CASHIER.consumer_id);
-                    try {
-                        await _self.openShift();
-                        console.log('Turno nuevo abierto con cajero:', CASHIER.consumer_id);
-                    } catch (e) {
-                        console.log('Error abriendo turno:', e.message);
                     }
                     await new Promise(r => setTimeout(r, 1000));
 
