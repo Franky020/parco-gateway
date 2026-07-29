@@ -1,6 +1,9 @@
 'use strict';
 require('dotenv').config();
 const express = require('express');
+const https = require('https');
+const fs = require('fs');
+const cron = require('node-cron');
 const app = express();
 
 app.use(express.json());
@@ -27,7 +30,35 @@ app.use(function (err, req, res, next) {
     res.status(500).json({ message: err.message, code: 500 });
 });
 
-const PORT = process.env.PORT || 5102;
-app.listen(PORT, '0.0.0.0', function () {
-    console.log(`Parco Gateway running on http://0.0.0.0:${PORT}`);
+// Liquidación diaria a las 4 AM
+cron.schedule('0 4 * * *', async function () {
+    console.log('Liquidación diaria — cerrando turno activo...');
+    try {
+        const helpers = require('./helpers');
+        const $helpers = new helpers();
+        const shift = await $helpers.shift();
+        await $helpers.closeShift(shift);
+        console.log('Turno cerrado exitosamente:', shift.shiftId);
+    } catch (err) {
+        console.log('Error en liquidación diaria:', err.message);
+    }
+}, {
+    timezone: 'America/Mexico_City'
 });
+
+const PORT = process.env.PORT || 8443;
+
+try {
+    const options = {
+        key  : fs.readFileSync('./ssl.key'),
+        cert : fs.readFileSync('./ssl.crt')
+    };
+    https.createServer(options, app).listen(PORT, '0.0.0.0', function () {
+        console.log(`Parco Gateway running on https://0.0.0.0:${PORT}`);
+    });
+} catch (err) {
+    console.log('SSL not found, starting HTTP:', err.message);
+    app.listen(PORT, '0.0.0.0', function () {
+        console.log(`Parco Gateway running on http://0.0.0.0:${PORT}`);
+    });
+}
