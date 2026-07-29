@@ -262,7 +262,7 @@ module.exports = function () {
     const _doCheckout = async function (params) {
         let balance = await _self.balance(params);
 
-        // Validaciones
+        // Validaciones antes de procesar el pago
         if (balance.flags.paid) {
             throw new Error('El ticket ya fue pagado anteriormente');
         }
@@ -273,7 +273,6 @@ module.exports = function () {
             throw new Error('El vehículo ya no se encuentra dentro del estacionamiento');
         }
 
-        // Definir convertDate aquí
         const convertDate = function (dateStr) {
             if (!dateStr || dateStr.length !== 14) return null;
             return `${dateStr.substr(0,4)}-${dateStr.substr(4,2)}-${dateStr.substr(6,2)}T${dateStr.substr(8,2)}:${dateStr.substr(10,2)}:${dateStr.substr(12,2)}`;
@@ -281,7 +280,6 @@ module.exports = function () {
 
         let intentos = 0;
         const MAX_INTENTOS = 6;
-         // ... resto del código
 
         while (intentos < MAX_INTENTOS) {
             try {
@@ -351,7 +349,7 @@ module.exports = function () {
                         let shift = await _self.shift();
                         await _self.closeShift(shift);
                     } catch (e) {
-                        console.log('Error cerrando turno:', e.message);
+                        console.log('Error cerrando turno (puede ya estar cerrado):', e.message);
                     }
                     await new Promise(r => setTimeout(r, 500));
 
@@ -360,12 +358,18 @@ module.exports = function () {
                     await new Promise(r => setTimeout(r, 500));
 
                 } else if (err.message.includes('10001') || err.message.includes('Dataset not created')) {
-                    console.log('Dataset not created — cerrando y abriendo nuevo turno...');
+                    console.log('Dataset not created — cerrando turno y abriendo nuevo...');
                     try {
                         let currentShift = await _self.shift();
                         await _self.closeShift(currentShift);
                     } catch (e) {
                         console.log('Error cerrando turno (puede ya estar cerrado):', e.message);
+                    }
+                    try {
+                        await _self.openShift();
+                        console.log('Turno nuevo abierto exitosamente');
+                    } catch (e) {
+                        console.log('Error abriendo turno:', e.message);
                     }
                     await new Promise(r => setTimeout(r, 1000));
 

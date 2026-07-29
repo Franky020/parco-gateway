@@ -20,6 +20,12 @@ router.post('/balance', async function (req, res) {
 // Checkout - registrar pago
 router.post('/checkout', async function (req, res) {
     try {
+        if (req.body.amount && parseInt(req.body.amount) > 99900) {
+            return res.status(400).json({ 
+                message: 'Monto excede el límite permitido de $999.00', 
+                code: 400 
+            });
+        }
         let $helpers = new helpers();
         let result = await $helpers.checkout({
             barcode : req.body.barcode,
