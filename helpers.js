@@ -262,18 +262,22 @@ module.exports = function () {
     const _doCheckout = async function (params) {
         let balance = await _self.balance(params);
 
-        // Validaciones antes de procesar el pago
+        // Validaciones
         if (balance.flags.paid) {
             throw new Error('El ticket ya fue pagado anteriormente');
         }
-
         if (!balance.amount || parseInt(balance.amount) === 0) {
             throw new Error('El ticket no tiene monto pendiente de pago');
         }
-
         if (!balance.flags.present) {
             throw new Error('El vehículo ya no se encuentra dentro del estacionamiento');
         }
+
+        // Definir convertDate aquí
+        const convertDate = function (dateStr) {
+            if (!dateStr || dateStr.length !== 14) return null;
+            return `${dateStr.substr(0,4)}-${dateStr.substr(4,2)}-${dateStr.substr(6,2)}T${dateStr.substr(8,2)}:${dateStr.substr(10,2)}:${dateStr.substr(12,2)}`;
+        };
 
         let intentos = 0;
         const MAX_INTENTOS = 6;
