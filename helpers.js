@@ -26,6 +26,17 @@ const CASHIER = {
 };
 
 const builder = new xml2js.Builder({ headless : true });
+const _cacheEpans = {};
+const CACHE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos
+
+const _limpiarCache = function () {
+    const ahora = Date.now();
+    for (const epan in _cacheEpans) {
+        if (ahora - _cacheEpans[epan].timestamp > CACHE_TIMEOUT_MS) {
+            delete _cacheEpans[epan];
+        }
+    }
+};
 
 module.exports = function () {
     let _self = this;
@@ -371,9 +382,25 @@ module.exports = function () {
     };
 
     _self.checkout = async function (params) {
+        // Verificar si el EPAN ya fue pagado recientemente
+        let epanKey = params.barcode || params.plate;
+        if (_cacheEpans[epanKey]) {
+            console.log(`EPAN en caché — devolviendo respuesta anterior: ${epanKey}`);
+            return _cacheEpans[epanKey].resultado;
+        }
+    
         return new Promise((resolve, reject) => {
             console.log(`Pago en cola. Posición: ${_queue.length + 1}`);
-            _queue.push({ params, resolve, reject });
+            _queue.push({ 
+                params, 
+                resolve: (result) => {
+                    // Guardar en caché al completar exitosamente
+                    _cacheEpans[epanKey] = { resultado: result, timestamp: Date.now() };
+                    _limpiarCache();
+                    resolve(result);
+                }, 
+                reject 
+            });
             _processQueue();
         });
     };
