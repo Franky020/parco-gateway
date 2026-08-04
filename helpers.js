@@ -270,117 +270,106 @@ module.exports = function () {
         }
     };
 
+    // Estado del gateway
+    let _bloqueado = false;
+
     const _doCheckout = async function (params) {
-        let balance = await _self.balance(params);
+
+        if (_bloqueado) {
+            throw new Error('Gateway bloqueado temporalmente — espere mientras se reinicia el turno');
+        }
         
+        let balance = await _self.balance(params);
+
         const convertDate = function (dateStr) {
             if (!dateStr || dateStr.length !== 14) return null;
             return `${dateStr.substr(0,4)}-${dateStr.substr(4,2)}-${dateStr.substr(6,2)}T${dateStr.substr(8,2)}:${dateStr.substr(10,2)}:${dateStr.substr(12,2)}`;
         };
 
-        let intentos = 0;
-        const MAX_INTENTOS = 2;
+        try {
+            let shift = await _self.shift();
+            let nextId = parseInt(shift.lastSalesTransactionId) + 1;
+            let now = new Date().toLocaleString('sv-SE', { timeZone: 'America/Mexico_City' }).replace(' ', 'T');
 
-        while (intentos < MAX_INTENTOS) {
-            try {
-                let shift = await _self.shift();
-                let nextId = parseInt(shift.lastSalesTransactionId) + 1;
-                let now = new Date().toLocaleString('sv-SE', { timeZone: 'America/Mexico_City' }).replace(' ', 'T');
-
-                let xml = builder.buildObject({
-                    'pay:salesTransactionDetail' : {
-                        $                      : { 'xmlns:pay' : 'http://gsph.sub.com/payment/types' },
-                        'pay:salesTransaction' : {
-                            'pay:shiftId'                  : shift.shiftId,
-                            'pay:computerId'               : CASHIER.computer_id,
-                            'pay:deviceId'                 : CASHIER.device_id,
-                            'pay:cashierContractId'        : CASHIER.contract_id,
-                            'pay:cashierConsumerId'        : CASHIER.consumer_id,
-                            'pay:salesTransactionID'       : nextId,
-                            'pay:salesTransactionDateTime' : now,
-                        },
-                        'pay:articles' : {
-                            'pay:article' : {
-                                'pay:artClassRef'       : 0,
-                                'pay:articleRef'        : 10100,
-                                'pay:quantity'          : 1,
-                                'pay:quantityExp'       : 0,
-                                'pay:amount'            : params.amount || balance.amount,
-                                'pay:vat'               : 0,
-                                'pay:influenceRevenue'  : 1,
-                                'pay:influenceCashFlow' : 1,
-                                'pay:cardInfos'         : {
-                                    'pay:cardInfo' : {
-                                        'pay:transType'               : 42,
-                                        'pay:transMark'               : 9,
-                                        'pay:facility'                : balance.meta.ticket.entryfacility,
-                                        'pay:epan'                    : balance.code,
-                                        'pay:cardType'                : 1,
-                                        'pay:cardSubType'             : 0,
-                                        'pay:cardClass'               : 0,
-                                        'pay:tariffTimeStart'         : convertDate(balance.dates.entry),
-                                        'pay:tariffTimeEnd'           : balance.dates.tariff ? balance.dates.tariff.replace(' ', 'T') : now,
-                                        'pay:moneyValue'              : params.amount || balance.amount,
-                                        'pay:pointValue'              : 0,
-                                        'pay:timeValue'               : 0,
-                                        'pay:paymentCounter'          : 1,
-                                        'pay:wkDayProgRef'            : 0,
-                                        'pay:meetingNumber'           : 0,
-                                        'pay:recodeTicketByTransType' : 1,
-                                    }
+            let xml = builder.buildObject({
+                'pay:salesTransactionDetail' : {
+                    $                      : { 'xmlns:pay' : 'http://gsph.sub.com/payment/types' },
+                    'pay:salesTransaction' : {
+                        'pay:shiftId'                  : shift.shiftId,
+                        'pay:computerId'               : CASHIER.computer_id,
+                        'pay:deviceId'                 : CASHIER.device_id,
+                        'pay:cashierContractId'        : CASHIER.contract_id,
+                        'pay:cashierConsumerId'        : CASHIER.consumer_id,
+                        'pay:salesTransactionID'       : nextId,
+                        'pay:salesTransactionDateTime' : now,
+                    },
+                    'pay:articles' : {
+                        'pay:article' : {
+                            'pay:artClassRef'       : 0,
+                            'pay:articleRef'        : 10100,
+                            'pay:quantity'          : 1,
+                            'pay:quantityExp'       : 0,
+                            'pay:amount'            : params.amount || balance.amount,
+                            'pay:vat'               : 0,
+                            'pay:influenceRevenue'  : 1,
+                            'pay:influenceCashFlow' : 1,
+                            'pay:cardInfos'         : {
+                                'pay:cardInfo' : {
+                                    'pay:transType'               : 42,
+                                    'pay:transMark'               : 9,
+                                    'pay:facility'                : balance.meta.ticket.entryfacility,
+                                    'pay:epan'                    : balance.code,
+                                    'pay:cardType'                : 1,
+                                    'pay:cardSubType'             : 0,
+                                    'pay:cardClass'               : 0,
+                                    'pay:tariffTimeStart'         : convertDate(balance.dates.entry),
+                                    'pay:tariffTimeEnd'           : balance.dates.tariff ? balance.dates.tariff.replace(' ', 'T') : now,
+                                    'pay:moneyValue'              : params.amount || balance.amount,
+                                    'pay:pointValue'              : 0,
+                                    'pay:timeValue'               : 0,
+                                    'pay:paymentCounter'          : 1,
+                                    'pay:wkDayProgRef'            : 0,
+                                    'pay:meetingNumber'           : 0,
+                                    'pay:recodeTicketByTransType' : 1,
                                 }
                             }
                         }
                     }
-                });
-
-                let payment = await _self.put(`/PaymentWebService/shifts/${shift.shiftId}/salestransactions`, xml);
-                let transaction = await _self.get(`/PaymentWebService/shifts/${shift.shiftId}/salestransactions/${nextId}`);
-
-                return { transaction, payment };
-
-            } catch (err) {
-                intentos++;
-                console.log(`Intento ${intentos} fallido:`, err.message);
-
-                if (err.message.includes('30003') || err.message.includes('Wrong shift')) {
-                    console.log('Wrong shift — cerrando y abriendo nuevo turno...');
-                    try {
-                        let shift = await _self.shift();
-                        await _self.closeShift(shift);
-                    } catch (e) {
-                        console.log('Error cerrando turno (puede ya estar cerrado):', e.message);
-                    }
-                    await new Promise(r => setTimeout(r, 500));
-
-                } else if (err.message.includes('10003') || err.message.includes('Wrong Sequence')) {
-                    console.log('Wrong sequence — reintentando...');
-                    await new Promise(r => setTimeout(r, 500));
-
-                } else if (err.message.includes('10001') || err.message.includes('Dataset not created')) {
-                    console.log('Dataset not created — cerrando turno y abriendo nuevo...');
-                    try {
-                        let currentShift = await _self.shift();
-                        await _self.closeShift(currentShift);
-                    } catch (e) {
-                        console.log('Error cerrando turno (puede ya estar cerrado):', e.message);
-                    }
-                    try {
-                        await _self.openShift();
-                        console.log('Turno nuevo abierto exitosamente');
-                    } catch (e) {
-                        console.log('Error abriendo turno:', e.message);
-                    }
-                    await new Promise(r => setTimeout(r, 1000));
-
-                } else {
-                    throw err;
                 }
-            }
-        }
-        throw new Error('No se pudo completar el pago después de ' + MAX_INTENTOS + ' intentos');
-    };
+            });
 
+            let payment = await _self.put(`/PaymentWebService/shifts/${shift.shiftId}/salestransactions`, xml);
+            let transaction = await _self.get(`/PaymentWebService/shifts/${shift.shiftId}/salestransactions/${nextId}`);
+
+            return { transaction, payment };
+
+        } catch (err) {
+            console.log('Pago fallido:', err.message);
+
+            // Bloquear gateway y recuperar en segundo plano
+            _bloqueado = true;
+            console.log('Gateway bloqueado — iniciando recuperación de turno...');
+
+            setImmediate(async () => {
+                try {
+                    let currentShift = await _self.shift();
+                    await _self.closeShift(currentShift);
+                    console.log('Turno cerrado exitosamente');
+                } catch (e) {
+                    console.log('Error cerrando turno:', e.message);
+                }
+                try {
+                    await _self.openShift();
+                    console.log('Turno nuevo abierto — desbloqueando gateway');
+                } catch (e) {
+                    console.log('Error abriendo turno:', e.message);
+                }
+                _bloqueado = false;
+            });
+
+            throw err;
+        }
+    };
     _self.checkout = async function (params) {
         // Verificar si el EPAN ya fue pagado recientemente
         let epanKey = params.barcode || params.plate;
