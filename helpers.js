@@ -343,6 +343,7 @@ module.exports = function () {
                 }
             });
 
+            await new Promise(r => setTimeout(r, Math.floor(Math.random() * 400) + 100));
             let payment = await _self.put(`/PaymentWebService/shifts/${shift.shiftId}/salestransactions`, xml);
             let transaction = await _self.get(`/PaymentWebService/shifts/${shift.shiftId}/salestransactions/${nextId}`);
 
