@@ -26,8 +26,16 @@ const CASHIER = {
 };
 
 const builder = new xml2js.Builder({ headless : true });
+
+// Logger con timestamp
+const log = function (msg) {
+    const ts = new Date().toLocaleString('sv-SE', { timeZone: 'America/Mexico_City' }).replace(' ', 'T');
+    console.log(`[${ts}] ${msg}`);
+};
+
+// Caché temporal de pagos recientes
 const _cacheEpans = {};
-const CACHE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos
+const CACHE_TIMEOUT_MS = 5 * 60 * 1000;
 
 const _limpiarCache = function () {
     const ahora = Date.now();
@@ -37,6 +45,9 @@ const _limpiarCache = function () {
         }
     }
 };
+
+// Estado del gateway
+let _bloqueado = false;
 
 module.exports = function () {
     let _self = this;
@@ -48,25 +59,22 @@ module.exports = function () {
                 .join('&') : '';
 
             let fullUrl = queryString ? `${BASE_URL}${url}?${queryString}` : `${BASE_URL}${url}`;
-            console.log('GET Full URL:', fullUrl);
-            console.log('GET Auth:', AUTH);
+            log(`GET ${fullUrl}`);
 
             let result = await axios.get(fullUrl, {
                 auth       : AUTH,
                 httpsAgent : agent,
                 headers    : { accept : '*/*' }
             });
-            console.log('Response data:', JSON.stringify(result.data));
 
             if (typeof result.data === 'string') {
                 let parsed = await xml2js.parseStringPromise(result.data, { explicitArray : false });
-                console.log('Parsed data:', JSON.stringify(parsed));
                 return parsed;
             }
 
             return result.data;
         } catch (err) {
-            console.log('GET Error status:', err.response ? err.response.status : 'no response');
+            log(`GET ERROR ${err.response ? err.response.status : 'no response'} — ${url}`);
             let message = err.response ? `Entervo error ${err.response.status}: ${JSON.stringify(err.response.data)}` : err.message;
             throw new Error(message);
         }
@@ -91,11 +99,11 @@ module.exports = function () {
                     'accept'       : '*/*'
                 }
             });
-            console.log('PUT response:', JSON.stringify(result.data));
+            log(`PUT OK — ${url}`);
             return result.data;
         } catch (err) {
-            console.log('PUT error status:', err.response ? err.response.status : 'no response');
-            console.log('PUT error data:', err.response ? JSON.stringify(err.response.data) : err.message);
+            log(`PUT ERROR ${err.response ? err.response.status : 'no response'} — ${url}`);
+            log(`PUT ERROR DATA — ${err.response ? JSON.stringify(err.response.data) : err.message}`);
             let message = err.response ? `PUT error ${err.response.status}: ${JSON.stringify(err.response.data)}` : err.message;
             throw new Error(message);
         }
@@ -186,7 +194,7 @@ module.exports = function () {
                 shift = shift.find(s => s.shiftStatus === '1');
             }
             if (shift && shift.shiftStatus === '1') {
-                console.log('Shift found:', shift.shiftId, 'lastTransactionId:', shift.lastSalesTransactionId);
+                log(`Shift found: ${shift.shiftId} lastTransactionId: ${shift.lastSalesTransactionId}`);
                 return shift;
             }
         }
@@ -196,7 +204,7 @@ module.exports = function () {
 
     _self.openShift = async function () {
         let now = new Date().toLocaleString('sv-SE', { timeZone: 'America/Mexico_City' }).replace(' ', 'T');
-        console.log('Opening shift with cashier:', CASHIER.consumer_id);
+        log(`Opening shift with cashier: ${CASHIER.consumer_id}`);
 
         let xml = builder.buildObject({
             'pay:shift' : {
@@ -245,7 +253,7 @@ module.exports = function () {
             headers    : { 'Content-Type' : 'text/xml', accept : '*/*' }
         });
 
-        console.log('Shift closed:', shift.shiftId);
+        log(`Shift closed: ${shift.shiftId}`);
         return result.data;
     };
 
@@ -270,15 +278,12 @@ module.exports = function () {
         }
     };
 
-    // Estado del gateway
-    let _bloqueado = false;
-
     const _doCheckout = async function (params) {
 
         if (_bloqueado) {
             throw new Error('Gateway bloqueado temporalmente — espere mientras se reinicia el turno');
         }
-        
+
         let balance = await _self.balance(params);
 
         const convertDate = function (dateStr) {
@@ -341,28 +346,28 @@ module.exports = function () {
             let payment = await _self.put(`/PaymentWebService/shifts/${shift.shiftId}/salestransactions`, xml);
             let transaction = await _self.get(`/PaymentWebService/shifts/${shift.shiftId}/salestransactions/${nextId}`);
 
+            log(`Pago exitoso — EPAN: ${balance.code} | Monto: ${params.amount || balance.amount} | TransID: ${nextId}`);
+
             return { transaction, payment };
 
         } catch (err) {
-            console.log('Pago fallido:', err.message);
+            log(`Pago fallido — ${err.message}`);
 
-            // Bloquear gateway y recuperar en segundo plano
             _bloqueado = true;
-            console.log('Gateway bloqueado — iniciando recuperación de turno...');
+            log('Gateway bloqueado — iniciando recuperación de turno...');
 
             setImmediate(async () => {
                 try {
                     let currentShift = await _self.shift();
                     await _self.closeShift(currentShift);
-                    console.log('Turno cerrado exitosamente');
                 } catch (e) {
-                    console.log('Error cerrando turno:', e.message);
+                    log(`Error cerrando turno: ${e.message}`);
                 }
                 try {
                     await _self.openShift();
-                    console.log('Turno nuevo abierto — desbloqueando gateway');
+                    log('Turno nuevo abierto — desbloqueando gateway');
                 } catch (e) {
-                    console.log('Error abriendo turno:', e.message);
+                    log(`Error abriendo turno: ${e.message}`);
                 }
                 _bloqueado = false;
             });
@@ -370,20 +375,19 @@ module.exports = function () {
             throw err;
         }
     };
+
     _self.checkout = async function (params) {
-        // Verificar si el EPAN ya fue pagado recientemente
         let epanKey = params.barcode || params.plate;
         if (_cacheEpans[epanKey]) {
-            console.log(`EPAN en caché — devolviendo respuesta anterior: ${epanKey}`);
+            log(`EPAN en caché — devolviendo respuesta anterior: ${epanKey}`);
             return _cacheEpans[epanKey].resultado;
         }
-    
+
         return new Promise((resolve, reject) => {
-            console.log(`Pago en cola. Posición: ${_queue.length + 1}`);
+            log(`Pago en cola. Posición: ${_queue.length + 1}`);
             _queue.push({ 
                 params, 
                 resolve: (result) => {
-                    // Guardar en caché al completar exitosamente
                     _cacheEpans[epanKey] = { resultado: result, timestamp: Date.now() };
                     _limpiarCache();
                     resolve(result);
