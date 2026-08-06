@@ -273,6 +273,7 @@ module.exports = function () {
         } catch (err) {
             reject(err);
         } finally {
+            await new Promise(r => setTimeout(r, 200));
             _processing = false;
             _processQueue();
         }
