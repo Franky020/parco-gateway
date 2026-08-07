@@ -35,7 +35,7 @@ const log = function (msg) {
 
 // Caché temporal de pagos recientes
 const _cacheEpans = {};
-const CACHE_TIMEOUT_MS = 5 * 60 * 1000;
+const CACHE_TIMEOUT_MS = 30 * 60 * 1000;
 
 const _limpiarCache = function () {
     const ahora = Date.now();
